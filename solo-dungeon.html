@@ -1,0 +1,1151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Solo Dungeon Explorer</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #1a1a1a; color: #ccc; font-family: monospace; font-size: 13px; display: flex; height: 100vh; overflow: hidden; }
+#canvas-wrap { flex: 1; overflow: auto; display: flex; align-items: flex-start; justify-content: flex-start; padding: 10px; }
+#dungeon-canvas { display: block; cursor: crosshair; image-rendering: pixelated; }
+#sidebar { width: 220px; min-width: 220px; background: #222; border-left: 1px solid #444; overflow-y: auto; padding: 10px; }
+.section-title { color: #888; text-transform: uppercase; font-size: 11px; letter-spacing: 1px; margin: 12px 0 6px; border-bottom: 1px solid #333; padding-bottom: 3px; }
+.section-title:first-child { margin-top: 0; }
+label { display: block; margin-bottom: 2px; color: #aaa; font-size: 12px; }
+input[type=range] { width: 100%; margin-bottom: 6px; accent-color: #888; }
+input[type=number], input[type=text], select { width: 100%; background: #2a2a2a; border: 1px solid #444; color: #ccc; padding: 3px 5px; margin-bottom: 6px; font-family: monospace; font-size: 12px; }
+input[type=checkbox] { margin-right: 5px; accent-color: #888; }
+.row { display: flex; gap: 4px; }
+.row input { flex: 1; }
+button { width: 100%; padding: 6px; background: #3a3a3a; border: 1px solid #555; color: #ccc; cursor: pointer; font-family: monospace; font-size: 12px; margin-bottom: 5px; }
+button:hover { background: #4a4a4a; }
+button.primary { background: #354a35; border-color: #4a6a4a; color: #9f9; }
+button.primary:hover { background: #405840; }
+.val-display { float: right; color: #888; }
+.hint { color: #555; font-size: 11px; margin-bottom: 6px; }
+#status { color: #777; font-size: 11px; margin-top: 8px; min-height: 16px; }
+</style>
+</head>
+<body>
+<div id="canvas-wrap">
+  <canvas id="dungeon-canvas"></canvas>
+</div>
+<div id="sidebar">
+  <div class="section-title">Dungeon</div>
+
+  <label>Seed</label>
+  <div class="row">
+    <input type="text" id="cfg-seed" value="" style="flex:2">
+    <button onclick="randomSeed()" style="flex:1;margin-bottom:6px">Rand</button>
+  </div>
+
+  <label>Rows <span class="val-display" id="rows-val">39</span></label>
+  <input type="range" id="cfg-rows" min="17" max="119" step="2" value="39" oninput="document.getElementById('rows-val').textContent=this.value">
+
+  <label>Cols <span class="val-display" id="cols-val">39</span></label>
+  <input type="range" id="cfg-cols" min="17" max="119" step="2" value="39" oninput="document.getElementById('cols-val').textContent=this.value">
+
+  <label>Cell size (px) <span class="val-display" id="cell-val">18</span></label>
+  <input type="range" id="cfg-cell" min="10" max="32" step="1" value="18" oninput="document.getElementById('cell-val').textContent=this.value">
+
+  <label>Layout</label>
+  <select id="cfg-layout">
+    <option>None</option>
+    <option>Box</option>
+    <option>Cross</option>
+    <option>Round</option>
+  </select>
+
+  <label>Rooms</label>
+  <select id="cfg-room-layout">
+    <option>Scattered</option>
+    <option>Packed</option>
+  </select>
+
+  <label>Room min <span class="val-display" id="rmin-val">3</span></label>
+  <input type="range" id="cfg-rmin" min="2" max="10" value="3" oninput="document.getElementById('rmin-val').textContent=this.value">
+
+  <label>Room max <span class="val-display" id="rmax-val">9</span></label>
+  <input type="range" id="cfg-rmax" min="3" max="16" value="9" oninput="document.getElementById('rmax-val').textContent=this.value">
+
+  <label>Corridors</label>
+  <select id="cfg-corridor">
+    <option>Bent</option>
+    <option>Labyrinth</option>
+    <option>Straight</option>
+  </select>
+
+  <label>Remove deadends <span class="val-display" id="dead-val">50%</span></label>
+  <input type="range" id="cfg-deadends" min="0" max="100" value="50" oninput="document.getElementById('dead-val').textContent=this.value+'%'">
+
+  <label>Stairs</label>
+  <input type="number" id="cfg-stairs" min="0" max="6" value="2">
+
+  <button class="primary" onclick="generate()">Generate Dungeon</button>
+
+  <div class="section-title">Gameplay</div>
+
+  <label><input type="checkbox" id="cfg-fog" checked> Fog of war</label>
+
+  <label>View radius <span class="val-display" id="rad-val">5</span></label>
+  <input type="range" id="cfg-radius" min="1" max="15" value="5" oninput="document.getElementById('rad-val').textContent=this.value;updateFog()">
+
+  <label>Fog type</label>
+  <select id="cfg-fogtype" onchange="updateFog()">
+    <option value="radius">Radius</option>
+    <option value="los">Line of sight</option>
+  </select>
+
+  <label>Explored cells</label>
+  <select id="cfg-explored" onchange="render()">
+    <option value="dim">Dim</option>
+    <option value="dark">Dark (true fog)</option>
+  </select>
+
+  <button onclick="resetPlayer()">Reset Position</button>
+
+  <div class="hint">Arrow keys / WASD to move<br>Click adjacent cell to move</div>
+  <div id="status"></div>
+</div>
+
+<script>
+// ---------------------------------------------------------------------------
+// Constants (mirrored from dungeon.pl)
+const NOTHING   = 0x00000000;
+const BLOCKED   = 0x00000001;
+const ROOM      = 0x00000002;
+const CORRIDOR  = 0x00000004;
+const PERIMETER = 0x00000010;
+const ENTRANCE  = 0x00000020;
+const ROOM_ID   = 0x0000FFC0;
+const ARCH      = 0x00010000;
+const DOOR      = 0x00020000;
+const LOCKED    = 0x00040000;
+const TRAPPED   = 0x00080000;
+const SECRET    = 0x00100000;
+const PORTC     = 0x00200000;
+const STAIR_DN  = 0x00400000;
+const STAIR_UP  = 0x00800000;
+const LABEL     = 0xFF000000;
+
+const OPENSPACE = ROOM | CORRIDOR;
+const DOORSPACE = ARCH | DOOR | LOCKED | TRAPPED | SECRET | PORTC;
+const ESPACE    = ENTRANCE | DOORSPACE | 0xFF000000;
+const STAIRS    = STAIR_DN | STAIR_UP;
+const BLOCK_ROOM = BLOCKED | ROOM;
+const BLOCK_CORR = BLOCKED | PERIMETER | CORRIDOR;
+const BLOCK_DOOR = BLOCKED | DOORSPACE;
+
+const di = { north: -1, south:  1, west:  0, east:  0 };
+const dj = { north:  0, south:  0, west: -1, east:  1 };
+const opposite = { north:'south', south:'north', west:'east', east:'west' };
+const DJ_DIRS = ['east','north','south','west'];
+
+const STAIR_END = {
+  north: { walled:[[1,-1],[0,-1],[-1,-1],[-1,0],[-1,1],[0,1],[1,1]], corridor:[[0,0],[1,0],[2,0]], stair:[0,0], next:[1,0] },
+  south: { walled:[[-1,-1],[0,-1],[1,-1],[1,0],[1,1],[0,1],[-1,1]],  corridor:[[0,0],[-1,0],[-2,0]], stair:[0,0], next:[-1,0] },
+  west:  { walled:[[-1,1],[-1,0],[-1,-1],[0,-1],[1,-1],[1,0],[1,1]], corridor:[[0,0],[0,1],[0,2]],  stair:[0,0], next:[0,1] },
+  east:  { walled:[[-1,-1],[-1,0],[-1,1],[0,1],[1,1],[1,0],[1,-1]], corridor:[[0,0],[0,-1],[0,-2]], stair:[0,0], next:[0,-1] },
+};
+
+const CLOSE_END = {
+  north: { walled:[[0,-1],[1,-1],[1,0],[1,1],[0,1]],   close:[[0,0]], recurse:[-1,0] },
+  south: { walled:[[0,-1],[-1,-1],[-1,0],[-1,1],[0,1]], close:[[0,0]], recurse:[1,0] },
+  west:  { walled:[[-1,0],[-1,1],[0,1],[1,1],[1,0]],   close:[[0,0]], recurse:[0,-1] },
+  east:  { walled:[[-1,0],[-1,-1],[0,-1],[1,-1],[1,0]], close:[[0,0]], recurse:[0,1] },
+};
+
+const DUNGEON_LAYOUT = {
+  Box:   [[1,1,1],[1,0,1],[1,1,1]],
+  Cross: [[0,1,0],[1,1,1],[0,1,0]],
+};
+
+const CORRIDOR_LAYOUT = { Labyrinth: 0, Bent: 50, Straight: 100 };
+
+// ---------------------------------------------------------------------------
+// Seeded PRNG (mulberry32)
+let _rng;
+function seedRng(seed) {
+  let s = seed >>> 0;
+  _rng = function() {
+    s |= 0; s = s + 0x6D2B79F5 | 0;
+    let t = Math.imul(s ^ s >>> 15, 1 | s);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+function rand(n) { return Math.floor(_rng() * n); }
+
+// ---------------------------------------------------------------------------
+// Dungeon generation (ported from dungeon.pl)
+
+function createDungeon(opts) {
+  const d = Object.assign({}, opts);
+  d.n_i = Math.floor(d.n_rows / 2);
+  d.n_j = Math.floor(d.n_cols / 2);
+  d.n_rows = d.n_i * 2;
+  d.n_cols = d.n_j * 2;
+  d.max_row = d.n_rows - 1;
+  d.max_col = d.n_cols - 1;
+  d.n_rooms = 0;
+  d.room_base = Math.floor((d.room_min + 1) / 2);
+  d.room_radix = Math.floor((d.room_max - d.room_min) / 2) + 1;
+
+  seedRng(d.seed);
+  initCells(d);
+  emplaceRooms(d);
+  openRooms(d);
+  labelRooms(d);
+  corridors(d);
+  if (d.add_stairs > 0) emplaceStairs(d);
+  cleanDungeon(d);
+  return d;
+}
+
+function initCells(d) {
+  d.cell = [];
+  for (let r = 0; r <= d.n_rows; r++) {
+    d.cell[r] = new Int32Array(d.n_cols + 1);
+  }
+  const mask = DUNGEON_LAYOUT[d.dungeon_layout];
+  if (mask) {
+    maskCells(d, mask);
+  } else if (d.dungeon_layout === 'Round') {
+    roundMask(d);
+  }
+}
+
+function maskCells(d, mask) {
+  const r_x = mask.length / (d.n_rows + 1);
+  const c_x = mask[0].length / (d.n_cols + 1);
+  for (let r = 0; r <= d.n_rows; r++) {
+    for (let c = 0; c <= d.n_cols; c++) {
+      if (!mask[Math.floor(r * r_x)][Math.floor(c * c_x)])
+        d.cell[r][c] = BLOCKED;
+    }
+  }
+}
+
+function roundMask(d) {
+  const cr = Math.floor(d.n_rows / 2);
+  const cc = Math.floor(d.n_cols / 2);
+  for (let r = 0; r <= d.n_rows; r++) {
+    for (let c = 0; c <= d.n_cols; c++) {
+      if (Math.sqrt((r-cr)**2 + (c-cc)**2) > cc)
+        d.cell[r][c] = BLOCKED;
+    }
+  }
+}
+
+function emplaceRooms(d) {
+  if (d.room_layout === 'Packed') packRooms(d);
+  else scatterRooms(d);
+}
+
+function packRooms(d) {
+  for (let i = 0; i < d.n_i; i++) {
+    const r = (i * 2) + 1;
+    for (let j = 0; j < d.n_j; j++) {
+      const c = (j * 2) + 1;
+      if (d.cell[r][c] & ROOM) continue;
+      if ((i === 0 || j === 0) && rand(2)) continue;
+      emplaceRoom(d, { i, j });
+    }
+  }
+}
+
+function scatterRooms(d) {
+  const n = Math.floor((d.n_cols * d.n_rows) / (d.room_max * d.room_max));
+  for (let i = 0; i < n; i++) emplaceRoom(d, {});
+}
+
+function emplaceRoom(d, proto) {
+  if (d.n_rooms === 999) return;
+  proto = setRoom(d, proto);
+
+  const r1 = (proto.i * 2) + 1;
+  const c1 = (proto.j * 2) + 1;
+  const r2 = ((proto.i + proto.height) * 2) - 1;
+  const c2 = ((proto.j + proto.width)  * 2) - 1;
+
+  if (r1 < 1 || r2 > d.max_row) return;
+  if (c1 < 1 || c2 > d.max_col) return;
+
+  const hit = soundRoom(d, r1, c1, r2, c2);
+  if (hit.blocked || Object.keys(hit).length > 0) return;
+
+  const room_id = ++d.n_rooms;
+  d.last_room_id = room_id;
+
+  for (let r = r1; r <= r2; r++) {
+    for (let c = c1; c <= c2; c++) {
+      if (d.cell[r][c] & ENTRANCE) d.cell[r][c] &= ~ESPACE;
+      else if (d.cell[r][c] & PERIMETER) d.cell[r][c] &= ~PERIMETER;
+      d.cell[r][c] |= ROOM | (room_id << 6);
+    }
+  }
+
+  if (!d.room) d.room = [];
+  d.room[room_id] = {
+    id: room_id, row: r1, col: c1,
+    north: r1, south: r2, west: c1, east: c2,
+    height: ((r2 - r1) + 1) * 10,
+    width:  ((c2 - c1) + 1) * 10,
+  };
+
+  for (let r = r1 - 1; r <= r2 + 1; r++) {
+    if (!(d.cell[r][c1-1] & (ROOM|ENTRANCE))) d.cell[r][c1-1] |= PERIMETER;
+    if (!(d.cell[r][c2+1] & (ROOM|ENTRANCE))) d.cell[r][c2+1] |= PERIMETER;
+  }
+  for (let c = c1 - 1; c <= c2 + 1; c++) {
+    if (!(d.cell[r1-1][c] & (ROOM|ENTRANCE))) d.cell[r1-1][c] |= PERIMETER;
+    if (!(d.cell[r2+1][c] & (ROOM|ENTRANCE))) d.cell[r2+1][c] |= PERIMETER;
+  }
+}
+
+function setRoom(d, proto) {
+  proto = Object.assign({}, proto);
+  const base = d.room_base, radix = d.room_radix;
+  if (proto.height === undefined) {
+    if (proto.i !== undefined) {
+      const a = Math.max(0, d.n_i - base - proto.i);
+      proto.height = rand(Math.min(a, radix)) + base;
+    } else {
+      proto.height = rand(radix) + base;
+    }
+  }
+  if (proto.width === undefined) {
+    if (proto.j !== undefined) {
+      const a = Math.max(0, d.n_j - base - proto.j);
+      proto.width = rand(Math.min(a, radix)) + base;
+    } else {
+      proto.width = rand(radix) + base;
+    }
+  }
+  if (proto.i === undefined) proto.i = rand(d.n_i - proto.height);
+  if (proto.j === undefined) proto.j = rand(d.n_j - proto.width);
+  return proto;
+}
+
+function soundRoom(d, r1, c1, r2, c2) {
+  const hit = {};
+  for (let r = r1; r <= r2; r++) {
+    for (let c = c1; c <= c2; c++) {
+      if (d.cell[r][c] & BLOCKED) return { blocked: true };
+      if (d.cell[r][c] & ROOM) {
+        const id = (d.cell[r][c] & ROOM_ID) >> 6;
+        hit[id] = (hit[id] || 0) + 1;
+      }
+    }
+  }
+  return hit;
+}
+
+function openRooms(d) {
+  if (!d.room) return;
+  for (let id = 1; id <= d.n_rooms; id++) openRoom(d, d.room[id]);
+  delete d.connect;
+}
+
+function openRoom(d, room) {
+  const list = doorSills(d, room);
+  if (!list.length) return;
+  const n_opens = allocOpens(room);
+
+  for (let i = 0; i < n_opens; i++) {
+    if (!list.length) break;
+    const idx = rand(list.length);
+    const sill = list.splice(idx, 1)[0];
+    const door_cell = d.cell[sill.door_r][sill.door_c];
+    if (door_cell & DOORSPACE) { i--; continue; }
+
+    if (sill.out_id) {
+      const key = [room.id, sill.out_id].sort().join(',');
+      if (!d.connect) d.connect = {};
+      if (d.connect[key]) { i--; continue; }
+      d.connect[key] = true;
+    }
+
+    for (let x = 0; x < 3; x++) {
+      const r = sill.sill_r + di[sill.dir] * x;
+      const c = sill.sill_c + dj[sill.dir] * x;
+      d.cell[r][c] &= ~PERIMETER;
+      d.cell[r][c] |= ENTRANCE;
+    }
+
+    const dtype = doorType();
+    const door = { row: sill.door_r, col: sill.door_c };
+
+    if (dtype === ARCH)    { d.cell[sill.door_r][sill.door_c] |= ARCH;    door.key = 'arch'; }
+    else if (dtype === DOOR)    { d.cell[sill.door_r][sill.door_c] |= DOOR;    d.cell[sill.door_r][sill.door_c] |= ('o'.charCodeAt(0) << 24); door.key = 'open'; }
+    else if (dtype === LOCKED)  { d.cell[sill.door_r][sill.door_c] |= LOCKED;  d.cell[sill.door_r][sill.door_c] |= ('x'.charCodeAt(0) << 24); door.key = 'lock'; }
+    else if (dtype === TRAPPED) { d.cell[sill.door_r][sill.door_c] |= TRAPPED; d.cell[sill.door_r][sill.door_c] |= ('t'.charCodeAt(0) << 24); door.key = 'trap'; }
+    else if (dtype === SECRET)  { d.cell[sill.door_r][sill.door_c] |= SECRET;  d.cell[sill.door_r][sill.door_c] |= ('s'.charCodeAt(0) << 24); door.key = 'secret'; }
+    else if (dtype === PORTC)   { d.cell[sill.door_r][sill.door_c] |= PORTC;   d.cell[sill.door_r][sill.door_c] |= ('#'.charCodeAt(0) << 24); door.key = 'portc'; }
+
+    if (sill.out_id) door.out_id = sill.out_id;
+    if (!room.door) room.door = {};
+    if (!room.door[sill.dir]) room.door[sill.dir] = [];
+    room.door[sill.dir].push(door);
+  }
+}
+
+function allocOpens(room) {
+  const rh = ((room.south - room.north) / 2) + 1;
+  const rw = ((room.east  - room.west)  / 2) + 1;
+  const f  = Math.floor(Math.sqrt(rw * rh));
+  return f + rand(f);
+}
+
+function doorSills(d, room) {
+  const list = [];
+  if (room.north >= 3)
+    for (let c = room.west; c <= room.east; c += 2) { const s = checkSill(d, room, room.north, c, 'north'); if (s) list.push(s); }
+  if (room.south <= d.n_rows - 3)
+    for (let c = room.west; c <= room.east; c += 2) { const s = checkSill(d, room, room.south, c, 'south'); if (s) list.push(s); }
+  if (room.west >= 3)
+    for (let r = room.north; r <= room.south; r += 2) { const s = checkSill(d, room, r, room.west, 'west'); if (s) list.push(s); }
+  if (room.east <= d.n_cols - 3)
+    for (let r = room.north; r <= room.south; r += 2) { const s = checkSill(d, room, r, room.east, 'east'); if (s) list.push(s); }
+  return shuffle(list);
+}
+
+function checkSill(d, room, sill_r, sill_c, dir) {
+  const door_r = sill_r + di[dir];
+  const door_c = sill_c + dj[dir];
+  const door_cell = d.cell[door_r][door_c];
+  if (!(door_cell & PERIMETER)) return null;
+  if (door_cell & BLOCK_DOOR) return null;
+  const out_r = door_r + di[dir];
+  const out_c = door_c + dj[dir];
+  const out_cell = d.cell[out_r][out_c];
+  if (out_cell & BLOCKED) return null;
+  let out_id = null;
+  if (out_cell & ROOM) {
+    out_id = (out_cell & ROOM_ID) >> 6;
+    if (out_id === room.id) return null;
+  }
+  return { sill_r, sill_c, dir, door_r, door_c, out_id };
+}
+
+function doorType() {
+  const i = rand(110);
+  if (i < 15)  return ARCH;
+  if (i < 60)  return DOOR;
+  if (i < 75)  return LOCKED;
+  if (i < 90)  return TRAPPED;
+  if (i < 100) return SECRET;
+  return PORTC;
+}
+
+function shuffle(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = rand(i + 1);
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function labelRooms(d) {
+  if (!d.room) return;
+  for (let id = 1; id <= d.n_rooms; id++) {
+    const room = d.room[id];
+    const label = String(id);
+    const lr = Math.floor((room.north + room.south) / 2);
+    const lc = Math.floor((room.west + room.east - label.length) / 2) + 1;
+    for (let x = 0; x < label.length; x++) {
+      d.cell[lr][lc + x] |= (label.charCodeAt(x) << 24);
+    }
+  }
+}
+
+function corridors(d) {
+  for (let i = 1; i < d.n_i; i++) {
+    const r = (i * 2) + 1;
+    for (let j = 1; j < d.n_j; j++) {
+      const c = (j * 2) + 1;
+      if (!(d.cell[r][c] & CORRIDOR)) tunnel(d, i, j, null);
+    }
+  }
+}
+
+function tunnel(d, i, j, last_dir) {
+  const dirs = tunnelDirs(d, last_dir);
+  for (const dir of dirs) {
+    if (openTunnel(d, i, j, dir)) {
+      tunnel(d, i + di[dir], j + dj[dir], dir);
+    }
+  }
+}
+
+function tunnelDirs(d, last_dir) {
+  const p = CORRIDOR_LAYOUT[d.corridor_layout];
+  let dirs = shuffle(DJ_DIRS);
+  if (last_dir && p && rand(100) < p) dirs.unshift(last_dir);
+  return dirs;
+}
+
+function openTunnel(d, i, j, dir) {
+  const this_r = (i * 2) + 1;
+  const this_c = (j * 2) + 1;
+  const next_r = ((i + di[dir]) * 2) + 1;
+  const next_c = ((j + dj[dir]) * 2) + 1;
+  const mid_r  = (this_r + next_r) / 2;
+  const mid_c  = (this_c + next_c) / 2;
+  if (soundTunnel(d, mid_r, mid_c, next_r, next_c))
+    return delveTunnel(d, this_r, this_c, next_r, next_c);
+  return false;
+}
+
+function soundTunnel(d, mid_r, mid_c, next_r, next_c) {
+  if (next_r < 0 || next_r > d.n_rows) return false;
+  if (next_c < 0 || next_c > d.n_cols) return false;
+  const r1 = Math.min(mid_r, next_r), r2 = Math.max(mid_r, next_r);
+  const c1 = Math.min(mid_c, next_c), c2 = Math.max(mid_c, next_c);
+  for (let r = r1; r <= r2; r++)
+    for (let c = c1; c <= c2; c++)
+      if (d.cell[r][c] & BLOCK_CORR) return false;
+  return true;
+}
+
+function delveTunnel(d, this_r, this_c, next_r, next_c) {
+  const r1 = Math.min(this_r, next_r), r2 = Math.max(this_r, next_r);
+  const c1 = Math.min(this_c, next_c), c2 = Math.max(this_c, next_c);
+  for (let r = r1; r <= r2; r++)
+    for (let c = c1; c <= c2; c++) {
+      d.cell[r][c] &= ~ENTRANCE;
+      d.cell[r][c] |= CORRIDOR;
+    }
+  return true;
+}
+
+function emplaceStairs(d) {
+  const list = stairEnds(d);
+  if (!list.length) return;
+  d.stair = [];
+  for (let i = 0; i < d.add_stairs; i++) {
+    if (!list.length) break;
+    const idx = rand(list.length);
+    const stair = list.splice(idx, 1)[0];
+    const type = i < 2 ? i : rand(2);
+    if (type === 0) {
+      d.cell[stair.row][stair.col] |= STAIR_DN;
+      d.cell[stair.row][stair.col] |= ('d'.charCodeAt(0) << 24);
+      stair.key = 'down';
+    } else {
+      d.cell[stair.row][stair.col] |= STAIR_UP;
+      d.cell[stair.row][stair.col] |= ('u'.charCodeAt(0) << 24);
+      stair.key = 'up';
+    }
+    d.stair.push(stair);
+  }
+}
+
+function stairEnds(d) {
+  const list = [];
+  for (let i = 0; i < d.n_i; i++) {
+    const r = (i * 2) + 1;
+    outer: for (let j = 0; j < d.n_j; j++) {
+      const c = (j * 2) + 1;
+      if (d.cell[r][c] !== CORRIDOR) continue;
+      if (d.cell[r][c] & STAIRS) continue;
+      for (const dir of Object.keys(STAIR_END)) {
+        if (checkTunnel(d, r, c, STAIR_END[dir])) {
+          const n = STAIR_END[dir].next;
+          list.push({ row: r, col: c, next_row: r + n[0], next_col: c + n[1] });
+          continue outer;
+        }
+      }
+    }
+  }
+  return list;
+}
+
+function checkTunnel(d, r, c, check) {
+  if (check.corridor)
+    for (const p of check.corridor)
+      if (d.cell[r+p[0]][c+p[1]] !== CORRIDOR) return false;
+  if (check.walled)
+    for (const p of check.walled)
+      if (d.cell[r+p[0]][c+p[1]] & OPENSPACE) return false;
+  return true;
+}
+
+function cleanDungeon(d) {
+  if (d.remove_deadends) removeDeadends(d);
+  fixDoors(d);
+  emptyBlocks(d);
+}
+
+function removeDeadends(d) {
+  collapseTunnels(d, d.remove_deadends, CLOSE_END);
+}
+
+function collapseTunnels(d, p, xc) {
+  if (!p) return;
+  const all = p === 100;
+  for (let i = 0; i < d.n_i; i++) {
+    const r = (i * 2) + 1;
+    for (let j = 0; j < d.n_j; j++) {
+      const c = (j * 2) + 1;
+      if (!(d.cell[r][c] & OPENSPACE)) continue;
+      if (d.cell[r][c] & STAIRS) continue;
+      if (!all && rand(100) >= p) continue;
+      collapse(d, r, c, xc);
+    }
+  }
+}
+
+function collapse(d, r, c, xc) {
+  if (!(d.cell[r][c] & OPENSPACE)) return;
+  for (const dir of Object.keys(xc)) {
+    if (checkTunnel(d, r, c, xc[dir])) {
+      for (const p of xc[dir].close) d.cell[r+p[0]][c+p[1]] = NOTHING;
+      if (xc[dir].open) {
+        const p = xc[dir].open;
+        d.cell[r+p[0]][c+p[1]] |= CORRIDOR;
+      }
+      if (xc[dir].recurse) {
+        const p = xc[dir].recurse;
+        collapse(d, r+p[0], c+p[1], xc);
+      }
+    }
+  }
+}
+
+function fixDoors(d) {
+  if (!d.room) return;
+  const fixed = [];
+  for (const room of d.room) {
+    if (!room) continue;
+    for (const dir of Object.keys(room.door || {})) {
+      const shiny = [];
+      for (const door of room.door[dir]) {
+        if (!(d.cell[door.row][door.col] & OPENSPACE)) continue;
+        if (!fixed[door.row]) fixed[door.row] = [];
+        if (fixed[door.row][door.col]) {
+          shiny.push(door);
+        } else {
+          if (door.out_id) {
+            const out_dir = opposite[dir];
+            const out_room = d.room[door.out_id];
+            if (out_room) {
+              if (!out_room.door) out_room.door = {};
+              if (!out_room.door[out_dir]) out_room.door[out_dir] = [];
+              out_room.door[out_dir].push(door);
+            }
+          }
+          shiny.push(door);
+          fixed[door.row][door.col] = true;
+          if (!d.door) d.door = [];
+          d.door.push(door);
+        }
+      }
+      if (shiny.length) room.door[dir] = shiny;
+      else delete room.door[dir];
+    }
+  }
+}
+
+function emptyBlocks(d) {
+  for (let r = 0; r <= d.n_rows; r++)
+    for (let c = 0; c <= d.n_cols; c++)
+      if (d.cell[r][c] & BLOCKED) d.cell[r][c] = NOTHING;
+}
+
+// ---------------------------------------------------------------------------
+// Rendering
+
+const canvas = document.getElementById('dungeon-canvas');
+const ctx = canvas.getContext('2d');
+let offscreen = null;
+let dungeon = null;
+
+function drawDungeonOffscreen(d, cellSize) {
+  const W = (d.n_cols + 1) * cellSize + 1;
+  const H = (d.n_rows + 1) * cellSize + 1;
+  const oc = document.createElement('canvas');
+  oc.width = W; oc.height = H;
+  const oc2 = oc.getContext('2d');
+
+  // Fill black (walls)
+  oc2.fillStyle = '#000';
+  oc2.fillRect(0, 0, W, H);
+
+  // Open cells
+  for (let r = 0; r <= d.n_rows; r++) {
+    for (let c = 0; c <= d.n_cols; c++) {
+      const cell = d.cell[r][c];
+      if (!(cell & OPENSPACE)) continue;
+      const x = c * cellSize, y = r * cellSize;
+      // Room slightly warmer than corridor
+      oc2.fillStyle = (cell & ROOM) ? '#f0ead6' : '#e0ddd0';
+      oc2.fillRect(x, y, cellSize + 1, cellSize + 1);
+    }
+  }
+
+  // Walls (lines on edges of open cells)
+  oc2.strokeStyle = '#555';
+  oc2.lineWidth = 1;
+  for (let r = 0; r <= d.n_rows; r++) {
+    for (let c = 0; c <= d.n_cols; c++) {
+      if (!(d.cell[r][c] & OPENSPACE)) continue;
+      const x1 = c * cellSize, y1 = r * cellSize;
+      const x2 = x1 + cellSize, y2 = y1 + cellSize;
+      oc2.beginPath();
+      if (r > 0 && !(d.cell[r-1][c] & OPENSPACE)) { oc2.moveTo(x1,y1); oc2.lineTo(x2,y1); }
+      if (c > 0 && !(d.cell[r][c-1] & OPENSPACE)) { oc2.moveTo(x1,y1); oc2.lineTo(x1,y2); }
+      if (c < d.n_cols && !(d.cell[r][c+1] & OPENSPACE)) { oc2.moveTo(x2,y1); oc2.lineTo(x2,y2); }
+      if (r < d.n_rows && !(d.cell[r+1][c] & OPENSPACE)) { oc2.moveTo(x1,y2); oc2.lineTo(x2,y2); }
+      oc2.stroke();
+    }
+  }
+
+  // Doors
+  if (d.door) {
+    for (const door of d.door) {
+      drawDoor(oc2, d, door, cellSize);
+    }
+  }
+
+  // Room labels
+  oc2.fillStyle = '#888';
+  const fontSize = Math.max(8, Math.floor(cellSize * 0.55));
+  oc2.font = `${fontSize}px monospace`;
+  oc2.textAlign = 'center';
+  oc2.textBaseline = 'middle';
+  for (let r = 0; r <= d.n_rows; r++) {
+    for (let c = 0; c <= d.n_cols; c++) {
+      const cell = d.cell[r][c];
+      if (!(cell & OPENSPACE)) continue;
+      const ch = (cell >>> 24) & 0xFF;
+      if (!ch) continue;
+      const char = String.fromCharCode(ch);
+      if (!/\d/.test(char)) continue;
+      oc2.fillText(char, c * cellSize + cellSize/2, r * cellSize + cellSize/2);
+    }
+  }
+
+  // Stairs
+  if (d.stair) {
+    oc2.strokeStyle = '#666';
+    oc2.lineWidth = 1;
+    for (const stair of d.stair) {
+      drawStair(oc2, stair, cellSize);
+    }
+  }
+
+  return oc;
+}
+
+function drawDoor(ctx2, d, door, dim) {
+  const r = door.row, c = door.col;
+  const x1 = c * dim, y1 = r * dim;
+  const x2 = x1 + dim, y2 = y1 + dim;
+  const a_px = Math.floor(dim / 6);
+  const d_tx = Math.floor(dim / 4);
+
+  // Determine orientation
+  const horizOpen = (c > 0 && (d.cell[r][c-1] & OPENSPACE));
+  const xc = horizOpen ? Math.floor((x1+x2)/2) : null;
+  const yc = horizOpen ? null : Math.floor((y1+y2)/2);
+
+  const archColor = '#444';
+  const doorColor = '#664';
+
+  // Wall line
+  ctx2.strokeStyle = archColor;
+  ctx2.lineWidth = 1;
+  if (door.key === 'secret') {
+    ctx2.strokeStyle = doorColor;
+    if (xc !== null) {
+      const cyc = Math.floor((y1+y2)/2);
+      ctx2.beginPath();
+      ctx2.moveTo(xc,y1); ctx2.lineTo(xc,y2);
+      ctx2.stroke();
+      // S shape hint
+      ctx2.beginPath();
+      ctx2.moveTo(xc-2,cyc-d_tx); ctx2.lineTo(xc+2,cyc-d_tx);
+      ctx2.moveTo(xc-2,cyc);      ctx2.lineTo(xc+2,cyc);
+      ctx2.moveTo(xc-2,cyc+d_tx); ctx2.lineTo(xc+2,cyc+d_tx);
+      ctx2.stroke();
+    } else {
+      const cxc = Math.floor((x1+x2)/2);
+      ctx2.beginPath();
+      ctx2.moveTo(x1,yc); ctx2.lineTo(x2,yc);
+      ctx2.stroke();
+      ctx2.beginPath();
+      ctx2.moveTo(cxc-d_tx,yc-2); ctx2.lineTo(cxc-d_tx,yc+2);
+      ctx2.moveTo(cxc,yc-2);      ctx2.lineTo(cxc,yc+2);
+      ctx2.moveTo(cxc+d_tx,yc-2); ctx2.lineTo(cxc+d_tx,yc+2);
+      ctx2.stroke();
+    }
+    return;
+  }
+
+  // Arch stubs
+  ctx2.fillStyle = archColor;
+  if (xc !== null) {
+    ctx2.fillRect(xc-1, y1, 3, a_px);
+    ctx2.fillRect(xc-1, y2-a_px, 3, a_px);
+  } else {
+    ctx2.fillRect(x1, yc-1, a_px, 3);
+    ctx2.fillRect(x2-a_px, yc-1, a_px, 3);
+  }
+
+  if (door.key === 'arch') return;
+
+  // Door rectangle
+  ctx2.strokeStyle = doorColor;
+  ctx2.lineWidth = 1;
+  ctx2.beginPath();
+  if (xc !== null) {
+    ctx2.rect(xc-d_tx, y1+a_px+1, d_tx*2, (y2-a_px-1)-(y1+a_px+1));
+  } else {
+    ctx2.rect(x1+a_px+1, yc-d_tx, (x2-a_px-1)-(x1+a_px+1), d_tx*2);
+  }
+  ctx2.stroke();
+
+  // Lock line
+  if (door.key === 'lock') {
+    ctx2.beginPath();
+    if (xc !== null) { ctx2.moveTo(xc, y1+a_px+1); ctx2.lineTo(xc, y2-a_px-1); }
+    else             { ctx2.moveTo(x1+a_px+1, yc); ctx2.lineTo(x2-a_px-1, yc); }
+    ctx2.stroke();
+  }
+
+  // Trap line
+  if (door.key === 'trap') {
+    const t_tx = Math.floor(dim/3);
+    ctx2.beginPath();
+    if (xc !== null) {
+      const cyc = Math.floor((y1+y2)/2);
+      ctx2.moveTo(xc-t_tx, cyc); ctx2.lineTo(xc+t_tx, cyc);
+    } else {
+      const cxc = Math.floor((x1+x2)/2);
+      ctx2.moveTo(cxc, yc-t_tx); ctx2.lineTo(cxc, yc+t_tx);
+    }
+    ctx2.stroke();
+  }
+
+  // Portcullis dots
+  if (door.key === 'portc') {
+    ctx2.fillStyle = doorColor;
+    if (xc !== null) {
+      for (let y = y1+a_px+2; y < y2-a_px; y += 2) ctx2.fillRect(xc, y, 1, 1);
+    } else {
+      for (let x = x1+a_px+2; x < x2-a_px; x += 2) ctx2.fillRect(x, yc, 1, 1);
+    }
+  }
+}
+
+function drawStair(ctx2, stair, dim) {
+  const s_px = Math.floor(dim / 2);
+  const t_px = Math.max(2, Math.floor(dim / 20) + 2);
+  ctx2.strokeStyle = '#777';
+  ctx2.lineWidth = 1;
+
+  if (stair.next_row > stair.row) {
+    const xc = Math.floor((stair.col + 0.5) * dim);
+    const y1 = stair.row * dim, y2 = (stair.next_row + 1) * dim;
+    for (let y = y1; y < y2; y += t_px) {
+      const dx = stair.key === 'down'
+        ? Math.floor(((y - y1) / (y2 - y1)) * s_px)
+        : s_px;
+      ctx2.beginPath(); ctx2.moveTo(xc-dx, y); ctx2.lineTo(xc+dx, y); ctx2.stroke();
+    }
+  } else if (stair.next_row < stair.row) {
+    const xc = Math.floor((stair.col + 0.5) * dim);
+    const y1 = (stair.row + 1) * dim, y2 = stair.next_row * dim;
+    for (let y = y1; y > y2; y -= t_px) {
+      const dx = stair.key === 'down'
+        ? Math.floor(((y - y1) / (y2 - y1)) * s_px)
+        : s_px;
+      ctx2.beginPath(); ctx2.moveTo(xc-dx, y); ctx2.lineTo(xc+dx, y); ctx2.stroke();
+    }
+  } else if (stair.next_col > stair.col) {
+    const x1 = stair.col * dim, x2 = (stair.next_col + 1) * dim;
+    const yc = Math.floor((stair.row + 0.5) * dim);
+    for (let x = x1; x < x2; x += t_px) {
+      const dy = stair.key === 'down'
+        ? Math.floor(((x - x1) / (x2 - x1)) * s_px)
+        : s_px;
+      ctx2.beginPath(); ctx2.moveTo(x, yc-dy); ctx2.lineTo(x, yc+dy); ctx2.stroke();
+    }
+  } else if (stair.next_col < stair.col) {
+    const x1 = (stair.col + 1) * dim, x2 = stair.next_col * dim;
+    const yc = Math.floor((stair.row + 0.5) * dim);
+    for (let x = x1; x > x2; x -= t_px) {
+      const dy = stair.key === 'down'
+        ? Math.floor(((x - x1) / (x2 - x1)) * s_px)
+        : s_px;
+      ctx2.beginPath(); ctx2.moveTo(x, yc-dy); ctx2.lineTo(x, yc+dy); ctx2.stroke();
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Fog of war
+
+let fog = null;      // 0=unseen 1=explored 2=visible
+let playerRow = 0, playerCol = 0;
+let cellSize = 18;
+
+function initFog(d) {
+  fog = [];
+  for (let r = 0; r <= d.n_rows; r++) {
+    fog[r] = new Uint8Array(d.n_cols + 1);
+  }
+}
+
+function isPassable(d, r, c) {
+  if (r < 0 || r > d.n_rows || c < 0 || c > d.n_cols) return false;
+  const cell = d.cell[r][c];
+  return !!(cell & (OPENSPACE | ENTRANCE | DOORSPACE)) && !(cell & BLOCKED);
+}
+
+function computeVisible(d, pr, pc, radius, mode) {
+  // Reset current visible to explored
+  for (let r = 0; r <= d.n_rows; r++)
+    for (let c = 0; c <= d.n_cols; c++)
+      if (fog[r][c] === 2) fog[r][c] = 1;
+
+  for (let dr = -radius; dr <= radius; dr++) {
+    for (let dc = -radius; dc <= radius; dc++) {
+      const tr = pr + dr, tc = pc + dc;
+      if (tr < 0 || tr > d.n_rows || tc < 0 || tc > d.n_cols) continue;
+      if (Math.max(Math.abs(dr), Math.abs(dc)) > radius) continue;
+
+      let visible = true;
+      if (mode === 'los' && (dr !== 0 || dc !== 0)) {
+        visible = hasLOS(d, pr, pc, tr, tc);
+      }
+      if (visible) fog[tr][tc] = 2;
+    }
+  }
+}
+
+function hasLOS(d, r0, c0, r1, c1) {
+  // Bresenham ray through grid cells
+  let r = r0, c = c0;
+  const dr = Math.abs(r1 - r0), dc = Math.abs(c1 - c0);
+  const sr = r0 < r1 ? 1 : -1, sc = c0 < c1 ? 1 : -1;
+  let err = dr - dc;
+
+  while (!(r === r1 && c === c1)) {
+    const e2 = 2 * err;
+    if (e2 > -dc) { err -= dc; r += sr; }
+    if (e2 <  dr) { err += dr; c += sc; }
+    if (r === r1 && c === c1) break;
+    // intermediate cell blocks LOS if solid
+    if (!(d.cell[r][c] & (OPENSPACE | ENTRANCE | DOORSPACE))) return false;
+  }
+  return true;
+}
+
+function updateFog() {
+  if (!dungeon || !fog) return;
+  const fogEnabled = document.getElementById('cfg-fog').checked;
+  if (!fogEnabled) {
+    // Mark everything visible
+    for (let r = 0; r <= dungeon.n_rows; r++)
+      for (let c = 0; c <= dungeon.n_cols; c++)
+        fog[r][c] = 2;
+  } else {
+    const radius = parseInt(document.getElementById('cfg-radius').value);
+    const mode = document.getElementById('cfg-fogtype').value;
+    computeVisible(dungeon, playerRow, playerCol, radius, mode);
+  }
+  render();
+}
+
+function render() {
+  if (!dungeon || !offscreen) return;
+  const d = dungeon;
+  const W = offscreen.width, H = offscreen.height;
+  canvas.width = W; canvas.height = H;
+
+  // Blit dungeon
+  ctx.drawImage(offscreen, 0, 0);
+
+  const fogEnabled = document.getElementById('cfg-fog').checked;
+  const exploredMode = document.getElementById('cfg-explored').value;
+
+  if (fogEnabled) {
+    // Draw fog overlay per cell
+    for (let r = 0; r <= d.n_rows; r++) {
+      for (let c = 0; c <= d.n_cols; c++) {
+        const state = fog[r][c];
+        if (state === 2) continue; // fully visible
+        const x = c * cellSize, y = r * cellSize;
+        if (state === 0) {
+          ctx.fillStyle = 'rgba(0,0,0,1)';
+        } else {
+          // explored
+          ctx.fillStyle = exploredMode === 'dim' ? 'rgba(0,0,0,0.55)' : 'rgba(0,0,0,1)';
+        }
+        ctx.fillRect(x, y, cellSize + 1, cellSize + 1);
+      }
+    }
+  }
+
+  // Player token
+  const px = playerCol * cellSize + cellSize / 2;
+  const py = playerRow * cellSize + cellSize / 2;
+  const pr = Math.max(3, cellSize / 2 - 2);
+
+  ctx.beginPath();
+  ctx.arc(px, py, pr, 0, Math.PI * 2);
+  ctx.fillStyle = '#FFD700';
+  ctx.fill();
+  ctx.strokeStyle = '#333';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+}
+
+// ---------------------------------------------------------------------------
+// Player logic
+
+function findStartPosition(d) {
+  // Prefer stair_up, then stair_dn, then first room center
+  if (d.stair) {
+    const up = d.stair.find(s => d.cell[s.row][s.col] & STAIR_UP);
+    if (up) return [up.row, up.col];
+    const dn = d.stair.find(s => d.cell[s.row][s.col] & STAIR_DN);
+    if (dn) return [dn.row, dn.col];
+  }
+  if (d.room && d.room[1]) {
+    const rm = d.room[1];
+    return [Math.floor((rm.north + rm.south) / 2), Math.floor((rm.west + rm.east) / 2)];
+  }
+  // Fallback: first passable cell
+  for (let r = 1; r <= d.n_rows; r++)
+    for (let c = 1; c <= d.n_cols; c++)
+      if (isPassable(d, r, c)) return [r, c];
+  return [1, 1];
+}
+
+function movePlayer(dr, dc) {
+  if (!dungeon) return;
+  const nr = playerRow + dr, nc = playerCol + dc;
+  if (!isPassable(dungeon, nr, nc)) return;
+  playerRow = nr; playerCol = nc;
+  updateFog();
+  updateStatus();
+}
+
+function resetPlayer() {
+  if (!dungeon) return;
+  [playerRow, playerCol] = findStartPosition(dungeon);
+  initFog(dungeon);
+  updateFog();
+  updateStatus();
+}
+
+function updateStatus() {
+  if (!dungeon) return;
+  const cell = dungeon.cell[playerRow][playerCol];
+  let loc = '';
+  if (cell & ROOM) {
+    const id = (cell & ROOM_ID) >> 6;
+    loc = `Room ${id}`;
+  } else if (cell & CORRIDOR) {
+    loc = 'Corridor';
+  }
+  if (cell & STAIR_UP) loc += ' (stair up)';
+  if (cell & STAIR_DN) loc += ' (stair down)';
+  document.getElementById('status').textContent = loc ? `@ ${loc}` : '';
+}
+
+// ---------------------------------------------------------------------------
+// Generate
+
+function randomSeed() {
+  document.getElementById('cfg-seed').value = Math.floor(Math.random() * 0xFFFFFFFF);
+}
+
+function getOpts() {
+  const seedRaw = document.getElementById('cfg-seed').value.trim();
+  let seed = parseInt(seedRaw);
+  if (isNaN(seed)) seed = Date.now() & 0xFFFFFFFF;
+
+  let n_rows = parseInt(document.getElementById('cfg-rows').value);
+  let n_cols = parseInt(document.getElementById('cfg-cols').value);
+  if (n_rows % 2 === 0) n_rows++;
+  if (n_cols % 2 === 0) n_cols++;
+
+  let room_min = parseInt(document.getElementById('cfg-rmin').value);
+  let room_max = parseInt(document.getElementById('cfg-rmax').value);
+  if (room_min >= room_max) room_max = room_min + 1;
+
+  return {
+    seed,
+    n_rows,
+    n_cols,
+    dungeon_layout: document.getElementById('cfg-layout').value,
+    room_layout:    document.getElementById('cfg-room-layout').value,
+    room_min,
+    room_max,
+    corridor_layout: document.getElementById('cfg-corridor').value,
+    remove_deadends: parseInt(document.getElementById('cfg-deadends').value),
+    add_stairs:      parseInt(document.getElementById('cfg-stairs').value),
+  };
+}
+
+function generate() {
+  cellSize = parseInt(document.getElementById('cfg-cell').value);
+  const opts = getOpts();
+  document.getElementById('cfg-seed').value = opts.seed;
+
+  dungeon = createDungeon(opts);
+  offscreen = drawDungeonOffscreen(dungeon, cellSize);
+
+  canvas.width  = offscreen.width;
+  canvas.height = offscreen.height;
+
+  initFog(dungeon);
+  [playerRow, playerCol] = findStartPosition(dungeon);
+  updateFog();
+  updateStatus();
+}
+
+// ---------------------------------------------------------------------------
+// Input
+
+document.addEventListener('keydown', e => {
+  const map = {
+    ArrowUp: [-1,0], ArrowDown: [1,0], ArrowLeft: [0,-1], ArrowRight: [0,1],
+    w: [-1,0], s: [1,0], a: [0,-1], d: [0,1],
+    W: [-1,0], S: [1,0], A: [0,-1], D: [0,1],
+  };
+  const move = map[e.key];
+  if (move) {
+    e.preventDefault();
+    movePlayer(move[0], move[1]);
+  }
+});
+
+canvas.addEventListener('click', e => {
+  if (!dungeon) return;
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width  / rect.width;
+  const scaleY = canvas.height / rect.height;
+  const px = (e.clientX - rect.left) * scaleX;
+  const py = (e.clientY - rect.top)  * scaleY;
+  const tc = Math.floor(px / cellSize);
+  const tr = Math.floor(py / cellSize);
+  const dr = tr - playerRow, dc = tc - playerCol;
+  if (Math.abs(dr) + Math.abs(dc) === 1) movePlayer(dr, dc);
+});
+
+document.getElementById('cfg-fog').addEventListener('change', updateFog);
+
+// ---------------------------------------------------------------------------
+// Init
+
+randomSeed();
+generate();
+</script>
+</body>
+</html>
