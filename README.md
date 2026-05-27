@@ -2,6 +2,11 @@
 
 A browser-based random dungeon generator for solo tabletop RPG play. No server, no install — open `solo-dungeon.html` directly.
 
+<div align="center">
+[▶ Play in Browser](https://acyed.github.io/Solo-Dungeon-Generator/solo-dungeon.html)
+</div>
+
+
 ![Dungeon screenshot showing fog of war and player token](Screenshot.png)
 
 ## Features
