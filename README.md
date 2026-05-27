@@ -2,7 +2,7 @@
 
 A browser-based random dungeon generator for solo tabletop RPG play. No server, no install — open `solo-dungeon.html` directly.
 
-![Dungeon screenshot showing fog of war and player token]
+![Dungeon screenshot showing fog of war and player token](Screenshot.png)
 
 ## Features
 
